@@ -960,6 +960,14 @@ static void drawBarLineWithDots(
 }
 
 static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, const Config& cfg) {
+  // Count visible GPUs (skip unavailable ones) for header rows calculation
+  int calcVisibleGpuCount = 0;
+  for (const auto& gt : state.latest.gpus) {
+    if (gt.utilPct || gt.vramUsedGiB || gt.vramTotalGiB || gt.watts || gt.tempC) {
+      ++calcVisibleGpuCount;
+    }
+  }
+
   const bool barView = (state.timelineView == TimelineView::Bars);
 
   const bool showCpu = barView ? cfg.showCpuBars : cfg.showCpu;
@@ -982,8 +990,8 @@ static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, 
   auto renderStatsHeader = [&](Frame& f) -> int {
     // Multi-line header matches legacy ncurses layout:
     // row 0: CPU/RAM/DISK/NET
-    // row 1..N: one row per GPU
-    const int headerRows = 1 + static_cast<int>(state.latest.gpus.size());
+    // row 1..N: one row per GPU (only visible GPUs)
+    const int headerRows = 1 + calcVisibleGpuCount;
 
     // Row 0
     {
@@ -1041,9 +1049,15 @@ static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, 
         addValueField(netStr, 32, Align::Left);
     }
 
-    // GPU rows
+    // GPU rows - skip GPUs with no data (unavailable)
+    int gpuRowIndex = 1;
     for (int i = 0; i < static_cast<int>(state.latest.gpus.size()); ++i) {
-      const int row = 1 + i;
+      const auto& gt = state.latest.gpus[static_cast<std::size_t>(i)];
+      // Skip GPUs that have no telemetry data (unavailable)
+      if (!gt.utilPct && !gt.vramUsedGiB && !gt.vramTotalGiB && !gt.watts && !gt.tempC) {
+        continue;
+      }
+      const int row = gpuRowIndex++;
       if (row >= f.height) break;
       drawBodyLine(f, row, L"", Style::Default);
 
@@ -1081,7 +1095,6 @@ static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, 
         }
       };
 
-      const auto& gt = state.latest.gpus[static_cast<std::size_t>(i)];
       // Header should be compact: GPU label is just "GPU <n>" (device name is shown elsewhere).
       const std::string gpuId = "GPU" + std::to_string(i);
       addLabel(gpuId + ":");
@@ -1184,6 +1197,10 @@ static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, 
   if (showGpu) {
     const std::size_t n = std::min(state.gpuTls.size(), gpuUsageSamples.size());
     for (std::size_t i = 0; i < n; ++i) {
+      // Skip GPUs with no telemetry data (unavailable)
+      if (!state.latest.gpus[i].utilPct && !state.latest.gpus[i].vramUsedGiB && !state.latest.gpus[i].vramTotalGiB && !state.latest.gpus[i].watts && !state.latest.gpus[i].tempC) {
+        continue;
+      }
       panels.push_back(Panel{gpuPrefix(i) + " USAGE", true, &gpuUsageSamples[i], &state.gpuTls[i], nullptr, 100.0, false, gpuContext(i), "%"});
     }
   }
@@ -1339,7 +1356,14 @@ static void renderTimelines(Frame& out, int /*bodyTop*/, const TuiState& state, 
 static void renderMinimal(Frame& out, int /*bodyTop*/, const TuiState& state) {
   // Reuse the Timelines top header (stats rows), but do not draw any scrolling bars.
   // This view is intended to be lightweight / text-only.
-  const int headerRows = 3 + static_cast<int>(state.latest.gpus.size());
+  // Count only visible GPUs (skip unavailable ones)
+  int calcVisibleGpuCount = 0;
+  for (const auto& gt : state.latest.gpus) {
+    if (gt.utilPct || gt.vramUsedGiB || gt.vramTotalGiB || gt.watts || gt.tempC) {
+      ++calcVisibleGpuCount;
+    }
+  }
+  const int headerRows = 3 + calcVisibleGpuCount;
 
   // Render the same stats header as Timelines by calling into renderTimelines' logic.
   // We keep it simple by delegating through a minimal local copy of the header code.
@@ -1380,8 +1404,15 @@ static void renderMinimal(Frame& out, int /*bodyTop*/, const TuiState& state) {
     addValueField(!state.latest.ramText.empty() ? state.latest.ramText : std::string("--"), 18, Align::Left);
   }
 
+  // GPU rows - skip GPUs with no data (unavailable)
+  int gpuRowIndex = 1;
   for (int i = 0; i < static_cast<int>(state.latest.gpus.size()); ++i) {
-    const int row = 1 + i;
+    const auto& gt = state.latest.gpus[static_cast<std::size_t>(i)];
+    // Skip GPUs that have no telemetry data (unavailable)
+    if (!gt.utilPct && !gt.vramUsedGiB && !gt.vramTotalGiB && !gt.watts && !gt.tempC) {
+      continue;
+    }
+    const int row = gpuRowIndex++;
     if (row >= out.height) break;
     drawBodyLine(out, row, L"", Style::Default);
 
@@ -1409,7 +1440,6 @@ static void renderMinimal(Frame& out, int /*bodyTop*/, const TuiState& state) {
       }
     };
 
-    const auto& gt = state.latest.gpus[static_cast<std::size_t>(i)];
     const std::string gpuPrefix = "GPU" + std::to_string(i) + ":";
     addLabelTight(gpuPrefix);
 
@@ -1462,8 +1492,11 @@ static void renderMinimal(Frame& out, int /*bodyTop*/, const TuiState& state) {
     addValueField(pcieStr, 40, Align::Left);
   }
 
+  // Calculate the disk row based on visible GPU rows
+  const int lastGpuRow = gpuRowIndex;
+
   {
-    const int row = 1 + static_cast<int>(state.latest.gpus.size());
+    const int row = lastGpuRow;
     if (row < out.height) {
       drawBodyLine(out, row, L"", Style::Default);
 
@@ -1500,7 +1533,7 @@ static void renderMinimal(Frame& out, int /*bodyTop*/, const TuiState& state) {
   }
 
   {
-    const int row = 2 + static_cast<int>(state.latest.gpus.size());
+    const int row = lastGpuRow + 1;
     if (row < out.height) {
       drawBodyLine(out, row, L"", Style::Default);
 
